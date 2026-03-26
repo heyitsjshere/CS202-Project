@@ -1,0 +1,14 @@
+# Dataset folders (too large / not needed in repo)
+sm_j10/
+sm_j20/
+
+# Python cache
+__pycache__/
+*.py[cod]
+
+# macOS
+.DS_Store
+
+# Editor
+.vscode/
+.idea/
