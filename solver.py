@@ -1,260 +1,394 @@
-#!/usr/bin/env python3
-"""
-RCPSP solver — CS202 Group Project, SMU.
-
-Reads a single .SCH file (updated PSPLIB format) and outputs a schedule
-that minimises project makespan (Cmax = S[n+1]) subject to finish-to-start
-precedence and renewable resource constraints.
-
-Usage:
-    python solver.py <path_to_file.SCH>
-
-Output (to stdout):
-    <actId> <startTime>     (one line per real activity 1..n)
-    Makespan: <value>
-"""
-
-import sys
 import time
+import random
 
-# ---------------------------------------------------------------------------
-# PHASE 1 — Data model and parser
-# ---------------------------------------------------------------------------
-
-class RCPSPInstance:
-    """
-    All data for one RCPSP instance.
-
-    Activities are indexed 0..n+1 where:
-      - 0    : dummy start (d=0, no resources)
-      - 1..n : real activities
-      - n+1  : dummy end   (d=0, no resources)
-
-    All precedence constraints are finish-to-start:
-      if i -> j then S[j] >= S[i] + d[i]
-
-    Attributes
-    ----------
-    n            : int         — number of real activities
-    K            : int         — number of renewable resource types
-    d            : list[int]   — d[i] = duration of activity i
-    r            : list[list]  — r[i][k] = resource demand of activity i for k
-    R            : list[int]   — R[k] = capacity of resource type k
-    successors   : list[list]  — successors[i]   = [j, ...]
-    predecessors : list[list]  — predecessors[j] = [i, ...]
-    """
-
-    def __init__(self, n, K, d, r, R, successors):
-        self.n = n
-        self.K = K
-        self.d = d
-        self.r = r
-        self.R = R
-        self.successors = successors
-
-        # Build predecessor list from the successor list
-        self.predecessors = [[] for _ in range(n + 2)]
-        for i in range(n + 2):
-            for j in successors[i]:
-                self.predecessors[j].append(i)
-
-    def summary(self):
-        """Return a human-readable description of the instance (for debugging)."""
-        total_arcs = sum(len(s) for s in self.successors)
-        return "\n".join([
-            f"  Activities : {self.n} real + 2 dummy = {self.n + 2} total",
-            f"  Resources  : {self.K} types, capacities {self.R}",
-            f"  Durations  : {self.d[1:self.n+1]}",
-            f"  Arcs       : {total_arcs} finish-to-start precedence edges",
-        ])
+try:
+	from .graph_utils import build_graph, compute_critical_path, topological_order
+	from .sgs import sgs
+except ImportError:
+	from graph_utils import build_graph, compute_critical_path, topological_order
+	from sgs import sgs
 
 
-def parse_sch(filepath):
-    """
-    Parse an updated PSPLIB .SCH file and return an RCPSPInstance.
-
-    File structure (blank lines ignored):
-      1. Header line     : n  K
-      2. Activity block  : n+2 rows, one per activity 0..n+1
-             actId  numSucc  succ1  succ2  ...
-      3. Resource block  : n+2 rows, one per activity 0..n+1
-             actId  duration  res1  res2  res3  res4  res5
-      4. Capacity line   : R1  R2  R3  R4  R5
-
-    All precedence constraints are finish-to-start (no lag values in this format).
-    """
-    with open(filepath) as f:
-        lines = [line.strip() for line in f if line.strip()]
-
-    idx = 0
-
-    # ------------------------------------------------------------------
-    # 1. Header
-    # ------------------------------------------------------------------
-    header = lines[idx].split()
-    idx += 1
-    n = int(header[0])   # number of real activities
-    K = int(header[1])   # number of resource types
-    num_acts = n + 2     # total activities including dummies 0 and n+1
-
-    # ------------------------------------------------------------------
-    # 2. Activity block — parse graph structure (successors only)
-    # ------------------------------------------------------------------
-    successors = [[] for _ in range(num_acts)]
-
-    for _ in range(num_acts):
-        parts = lines[idx].split()
-        idx += 1
-
-        act_id   = int(parts[0])
-        num_succ = int(parts[1])
-
-        for s in range(num_succ):
-            j = int(parts[2 + s])
-            successors[act_id].append(j)
-
-    # ------------------------------------------------------------------
-    # 3. Resource block — parse durations and resource demands
-    # ------------------------------------------------------------------
-    d = [0] * num_acts
-    r = [[0] * K for _ in range(num_acts)]
-
-    for _ in range(num_acts):
-        parts = lines[idx].split()
-        idx += 1
-
-        act_id    = int(parts[0])
-        d[act_id] = int(parts[1])          # duration is the 2nd field
-        for k in range(K):
-            r[act_id][k] = int(parts[2 + k])
-
-    # ------------------------------------------------------------------
-    # 4. Resource capacities
-    # ------------------------------------------------------------------
-    R = list(map(int, lines[idx].split()))
-
-    # ------------------------------------------------------------------
-    # 5. Repair dangling activities caused by the lag-removal update
-    #
-    # The updated dataset removed all negative-lag arcs. This leaves two
-    # classes of "dangling" activities:
-    #
-    #   (a) No successors: activity only had outgoing negative-lag arcs.
-    #       Fix: add arc i → n+1 (project can't end until i finishes).
-    #
-    #   (b) No predecessors: activity was only reachable via incoming
-    #       negative-lag arcs (which ran in the reverse direction).
-    #       Fix: add arc 0 → i (activity may start from time 0).
-    #
-    # Both repairs are logically sound for standard RCPSP.
-    # ------------------------------------------------------------------
-    for i in range(1, n + 1):
-        if not successors[i]:
-            successors[i].append(n + 1)
-
-    # Build a temporary predecessor view to detect no-predecessor activities
-    has_pred = [False] * (n + 2)
-    for i in range(n + 2):
-        for j in successors[i]:
-            has_pred[j] = True
-
-    for i in range(1, n + 1):
-        if not has_pred[i]:
-            successors[0].append(i)
-
-    return RCPSPInstance(n, K, d, r, R, successors)
+def resource_feasible(instance):
+	for i in range(instance.n):
+		for r in range(instance.num_resources):
+			if instance.demands[i][r] > instance.resources[r]:
+				return False
+	return True
 
 
-# ---------------------------------------------------------------------------
-# PHASE 1 — Validation helper
-# ---------------------------------------------------------------------------
+def validate_schedule(instance, schedule):
+	n = instance.n
+	if schedule is None or len(schedule) != n:
+		return False, "invalid schedule length", None
 
-def validate_parse(inst):
-    """
-    Run basic sanity checks on a freshly parsed RCPSPInstance.
-    Returns a (possibly empty) list of error strings.
-    """
-    n, K = inst.n, inst.K
-    errors = []
+	durations = instance.durations
+	demands = instance.demands
+	capacities = instance.resources
+	num_resources = instance.num_resources
 
-    # Dummy activities must have zero duration and zero resource demand
-    for dummy in (0, n + 1):
-        if inst.d[dummy] != 0:
-            errors.append(f"Dummy {dummy}: expected duration 0, got {inst.d[dummy]}")
-        for k in range(K):
-            if inst.r[dummy][k] != 0:
-                errors.append(f"Dummy {dummy}: expected r[{k}]=0, got {inst.r[dummy][k]}")
+	for i in range(n):
+		if schedule[i] < 0:
+			return False, f"negative start time at activity {i}", None
 
-    # All durations must be non-negative
-    for i in range(1, n + 1):
-        if inst.d[i] < 0:
-            errors.append(f"Activity {i}: negative duration {inst.d[i]}")
+	for i, j in instance.precedence:
+		if schedule[j] < schedule[i] + durations[i]:
+			return False, f"precedence violation: {i}->{j}", None
 
-    # Resource demands must be non-negative
-    for i in range(1, n + 1):
-        for k in range(K):
-            if inst.r[i][k] < 0:
-                errors.append(f"Activity {i}: negative demand r[{k}]={inst.r[i][k]}")
+	makespan = max(schedule[i] + durations[i] for i in range(n))
+	usage = [[0] * num_resources for _ in range(makespan)]
 
-    # Resource capacities must be positive
-    if len(inst.R) != K:
-        errors.append(f"Expected {K} resource capacities, got {len(inst.R)}")
-    for k in range(K):
-        if inst.R[k] <= 0:
-            errors.append(f"Resource {k}: non-positive capacity {inst.R[k]}")
+	for i in range(n):
+		s = schedule[i]
+		d = durations[i]
+		if d <= 0:
+			continue
+		for t in range(s, s + d):
+			row = usage[t]
+			for r in range(num_resources):
+				row[r] += demands[i][r]
+				if row[r] > capacities[r]:
+					return False, f"resource violation at t={t}, resource={r}", None
 
-    # Dummy start (0) should have no predecessors
-    if inst.predecessors[0]:
-        errors.append("Dummy start (0) unexpectedly has predecessors")
-
-    # Dummy end (n+1) should have no successors
-    if inst.successors[n + 1]:
-        errors.append("Dummy end (n+1) unexpectedly has successors")
-
-    # Every real activity must have at least one predecessor
-    for i in range(1, n + 1):
-        if not inst.predecessors[i]:
-            errors.append(f"Activity {i}: no predecessors (unreachable from start)")
-
-    return errors
+	return True, "", makespan
 
 
-# ---------------------------------------------------------------------------
-# PLACEHOLDER — later phases will add functions here
-# ---------------------------------------------------------------------------
-# Phase 2: compute_est_lft, compute_lower_bound
-# Phase 3: serial_sgs, priority rules
-# Phase 4: lns_sa (Large Neighbourhood Search + Simulated Annealing)
-# Phase 5: time budget management woven into Phase 3/4
+def classify_and_solve(instance):
+	if instance.n <= 0:
+		return "feasible", [], 0, ""
+
+	if not resource_feasible(instance):
+		return "true_infeasible", None, None, "capacity violation"
+
+	try:
+		topological_order(instance)
+	except ValueError as exc:
+		return "true_infeasible", None, None, str(exc)
+
+	try:
+		schedule, makespan = sgs(instance)
+	except ValueError as exc:
+		return "heuristic_failed", None, None, str(exc)
+
+	ok, msg, validated_makespan = validate_schedule(instance, schedule)
+	if not ok:
+		return "heuristic_failed", None, None, f"invalid heuristic schedule: {msg}"
+
+	return "feasible", schedule, validated_makespan, ""
 
 
-# ---------------------------------------------------------------------------
-# Entry point
-# ---------------------------------------------------------------------------
-
-def main():
-    start_time = time.time()  # noqa: used in Phase 5 for time-budget cutoff
-
-    if len(sys.argv) != 2:
-        print("Usage: python solver.py <path_to_file.SCH>", file=sys.stderr)
-        sys.exit(1)
-
-    filepath = sys.argv[1]
-
-    # --- Phase 1: parse ---
-    inst = parse_sch(filepath)
-    errors = validate_parse(inst)
-    if errors:
-        for e in errors:
-            print(f"[PARSE ERROR] {e}", file=sys.stderr)
-        sys.exit(1)
-
-    # Temporary: print instance summary so we can verify parsing visually
-    print(f"Parsed: n={inst.n}, K={inst.K}", file=sys.stderr)
-    print(inst.summary(), file=sys.stderr)
-
-    # TODO (Phase 3+): generate and output a schedule
+def _evaluate_bias_solution(instance, bias):
+	"""Run SGS with a priority bias and validate the resulting schedule."""
+	schedule, _ = sgs(instance, priority_bias=bias)
+	ok, msg, checked_makespan = validate_schedule(instance, schedule)
+	if not ok:
+		raise ValueError(msg)
+	return schedule, checked_makespan
 
 
-if __name__ == "__main__":
-    main()
+def classify_and_solve_multistart(
+	instance,
+	starts=30,
+	seed=42,
+	ls_iters=20,
+	ls_neighbors=6,
+	ls_step=0.20,
+):
+	"""Scalable heuristic mode: randomized multistart SGS + local bias refinement."""
+	if instance.n <= 0:
+		return "feasible", [], 0, ""
+
+	if not resource_feasible(instance):
+		return "true_infeasible", None, None, "capacity violation"
+
+	try:
+		topological_order(instance)
+	except ValueError as exc:
+		return "true_infeasible", None, None, str(exc)
+
+	rng = random.Random(seed)
+	n = instance.n
+	trials = max(1, int(starts))
+	ls_iters = max(0, int(ls_iters))
+	ls_neighbors = max(1, int(ls_neighbors))
+	ls_step = max(0.01, float(ls_step))
+
+	best_schedule = None
+	best_makespan = float("inf")
+	best_bias = None
+	last_error = ""
+
+	for _ in range(trials):
+		bias = [rng.uniform(-0.5, 0.5) for _ in range(n)]
+		try:
+			schedule, checked_makespan = _evaluate_bias_solution(instance, bias)
+			if checked_makespan < best_makespan:
+				best_makespan = checked_makespan
+				best_schedule = schedule
+				best_bias = list(bias)
+		except ValueError as exc:
+			last_error = str(exc)
+
+	# Fallback seed point for local search if all randomized starts failed.
+	if best_bias is None:
+		try:
+			zero_bias = [0.0] * n
+			schedule, checked_makespan = _evaluate_bias_solution(instance, zero_bias)
+			best_schedule = schedule
+			best_makespan = checked_makespan
+			best_bias = zero_bias
+		except ValueError as exc:
+			last_error = str(exc)
+
+	# Local search in bias space: mutate a few priorities and keep improving moves.
+	local_improvements = 0
+	if best_bias is not None and ls_iters > 0:
+		current_bias = list(best_bias)
+		current_makespan = best_makespan
+		step = ls_step
+
+		for it in range(ls_iters):
+			iter_best_makespan = current_makespan
+			iter_best_schedule = None
+			iter_best_bias = None
+
+			for _ in range(ls_neighbors):
+				candidate_bias = list(current_bias)
+				mut_count = max(1, min(n, n // 8))
+				for j in rng.sample(range(n), mut_count):
+					candidate_bias[j] += rng.uniform(-step, step)
+
+				try:
+					schedule, mk = _evaluate_bias_solution(instance, candidate_bias)
+				except ValueError as exc:
+					last_error = str(exc)
+					continue
+
+				if mk < iter_best_makespan:
+					iter_best_makespan = mk
+					iter_best_schedule = schedule
+					iter_best_bias = candidate_bias
+
+			if iter_best_bias is not None:
+				current_bias = iter_best_bias
+				current_makespan = iter_best_makespan
+				best_bias = iter_best_bias
+				best_schedule = iter_best_schedule
+				best_makespan = iter_best_makespan
+				local_improvements += 1
+			else:
+				# Gentle cooling and occasional kick to escape plateaus.
+				step = max(0.02, step * 0.90)
+				if it % 5 == 4:
+					for j in rng.sample(range(n), max(1, n // 12)):
+						current_bias[j] += rng.uniform(-0.15, 0.15)
+
+	if best_schedule is not None:
+		msg = f"multistart={trials}"
+		if ls_iters > 0:
+			msg += f", local_search={ls_iters}, improved_iters={local_improvements}"
+		return "feasible", best_schedule, best_makespan, msg
+
+	return "heuristic_failed", None, None, (last_error or "no feasible schedule found in multistart")
+
+
+def classify_and_solve_optimal(instance, time_limit_s=10.0):
+	"""
+	Exact branch-and-bound search over active schedules.
+
+	Returns statuses:
+	  - feasible_optimal
+	  - feasible_not_proven (time limit reached with incumbent)
+	  - true_infeasible
+	  - heuristic_failed
+	"""
+	n = instance.n
+	if n <= 0:
+		return "feasible_optimal", [], 0, ""
+
+	if not resource_feasible(instance):
+		return "true_infeasible", None, None, "capacity violation"
+
+	try:
+		topo = topological_order(instance)
+	except ValueError as exc:
+		return "true_infeasible", None, None, str(exc)
+
+	succ, pred = build_graph(instance)
+	cp = compute_critical_path(instance)
+
+	durations = instance.durations
+	demands = instance.demands
+	capacities = instance.resources
+	num_resources = instance.num_resources
+	horizon = sum(durations)
+
+	if horizon <= 0:
+		return "feasible_optimal", [0] * n, 0, ""
+
+	reqs = [[(r, demands[i][r]) for r in range(num_resources) if demands[i][r] > 0] for i in range(n)]
+
+	base_status, base_schedule, base_makespan, _ = classify_and_solve_multistart(
+		instance,
+		starts=min(64, max(8, n * 2)),
+		seed=42,
+	)
+	best_schedule = None
+	best_makespan = float("inf")
+	if base_status == "feasible":
+		best_schedule = list(base_schedule)
+		best_makespan = base_makespan
+
+	usage = [[0] * num_resources for _ in range(horizon)]
+	start = [-1] * n
+	scheduled = [False] * n
+	timed_out = [False]
+	deadline = (time.perf_counter() + float(time_limit_s)) if time_limit_s and time_limit_s > 0 else None
+
+	def earliest_feasible_start(job, est, latest_start):
+		d = durations[job]
+		if d == 0:
+			return est
+
+		t = est
+		while t <= latest_start:
+			feasible = True
+			for dt in range(d):
+				row = usage[t + dt]
+				for r, dem in reqs[job]:
+					if row[r] + dem > capacities[r]:
+						feasible = False
+						break
+				if not feasible:
+					break
+			if feasible:
+				return t
+			t += 1
+		return None
+
+	def precedence_lower_bound(current_finish):
+		ef = [0] * n
+		for u in topo:
+			est = 0
+			for p in pred[u]:
+				pf = (start[p] + durations[p]) if scheduled[p] else ef[p]
+				if pf > est:
+					est = pf
+
+			if scheduled[u]:
+				# Start is fixed at scheduled[u]; keep consistency with precedence.
+				ef[u] = max(est, start[u]) + durations[u]
+			else:
+				ef[u] = est + durations[u]
+
+		return max(current_finish, max(ef))
+
+	def resource_lower_bound():
+		lb = 0
+		for r in range(num_resources):
+			cap = capacities[r]
+			if cap <= 0:
+				continue
+			remaining_work = 0
+			for i in range(n):
+				if not scheduled[i]:
+					remaining_work += durations[i] * demands[i][r]
+			lb_r = (remaining_work + cap - 1) // cap
+			if lb_r > lb:
+				lb = lb_r
+		return lb
+
+	def dfs(scheduled_count, current_finish):
+		nonlocal best_schedule, best_makespan
+
+		if deadline is not None and time.perf_counter() > deadline:
+			timed_out[0] = True
+			return
+
+		lb = max(precedence_lower_bound(current_finish), resource_lower_bound())
+		if lb >= best_makespan:
+			return
+
+		if scheduled_count == n:
+			if current_finish < best_makespan:
+				best_makespan = current_finish
+				best_schedule = list(start)
+			return
+
+		ready = []
+		for i in range(n):
+			if scheduled[i]:
+				continue
+			if all(scheduled[p] for p in pred[i]):
+				ready.append(i)
+
+		if not ready:
+			return
+
+		# Most-constrained-first branching with feasible-start lookahead.
+		candidates = []
+		for i in ready:
+			est = max((start[p] + durations[p] for p in pred[i]), default=0)
+			latest_start = horizon - durations[i]
+			if best_makespan < float("inf"):
+				latest_start = min(latest_start, best_makespan - durations[i])
+			if latest_start < est:
+				continue
+
+			t = earliest_feasible_start(i, est, latest_start)
+			if t is None:
+				continue
+
+			slack = latest_start - t
+			pressure = sum((dem / capacities[r]) if capacities[r] > 0 else dem for r, dem in reqs[i])
+			candidates.append((slack, t, -pressure, -cp[i], -len(succ[i]), i, t))
+
+		if not candidates:
+			return
+
+		candidates.sort()
+
+		for _, _, _, _, _, i, t in candidates:
+
+			d = durations[i]
+			scheduled[i] = True
+			start[i] = t
+			for dt in range(d):
+				row = usage[t + dt]
+				for r, dem in reqs[i]:
+					row[r] += dem
+
+			dfs(scheduled_count + 1, max(current_finish, t + d))
+
+			for dt in range(d):
+				row = usage[t + dt]
+				for r, dem in reqs[i]:
+					row[r] -= dem
+			start[i] = -1
+			scheduled[i] = False
+
+			if timed_out[0]:
+				return
+
+	dfs(0, 0)
+
+	if best_schedule is None:
+		if timed_out[0]:
+			return "heuristic_failed", None, None, "time limit reached without incumbent"
+		return "true_infeasible", None, None, "no feasible schedule exists"
+
+	ok, msg, checked_makespan = validate_schedule(instance, best_schedule)
+	if not ok:
+		return "heuristic_failed", None, None, f"internal invalid schedule: {msg}"
+
+	if timed_out[0]:
+		return "feasible_not_proven", best_schedule, checked_makespan, "time limit reached"
+	return "feasible_optimal", best_schedule, checked_makespan, ""
+
+
+def solve_rcpsp(instance):
+	"""Default heuristic solve for speed."""
+	status, schedule, makespan, message = classify_and_solve(instance)
+	if status == "feasible":
+		return schedule, makespan
+	raise ValueError(message or status)
