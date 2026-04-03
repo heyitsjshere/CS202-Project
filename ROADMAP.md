@@ -1,7 +1,7 @@
-# CS202 Group Project — RCPSP/max Solver Roadmap
+# CS202 Group Project — RCPSP Solver Roadmap
 
 **Course:** CS202, Singapore Management University
-**Problem:** Resource-Constrained Project Scheduling Problem with max-lag constraints (RCPSP/max)
+**Problem:** Resource-Constrained Project Scheduling Problem (RCPSP)
 **Goal:** Minimise project makespan (Cmax) within a 30-second wall-clock time limit per instance
 **Language:** Python (standard library only — no OR-Tools, PuLP, Gurobi, CPLEX)
 
@@ -25,12 +25,21 @@
 
 | Constraint | Formula |
 |---|---|
-| Positive lag (forward) | S[j] >= S[i] + lag |
-| Zero lag | S[j] >= S[i] |
-| Negative lag (backward/max-lag) | S[j] <= S[i] + \|lag\| |
+| Precedence (finish-to-start) | S[j] >= S[i] + d[i] for every arc i → j |
 | Resource at time t | Σ r[i][k] for all active i ≤ R[k] |
 | Active interval | S[i] ≤ t < S[i] + d[i] &nbsp;&nbsp;(**exclusive** upper bound) |
 | Non-negativity | S[i] >= 0 |
+
+---
+
+## File Format (Updated PSPLIB)
+
+```
+n  K                                    ← header: 2 fields
+actId  numSucc  succ1  succ2  ...       ← activity block (n+2 rows, no lags)
+actId  duration  res1  res2  ...  res5  ← resource block (n+2 rows)
+R1  R2  R3  R4  R5                      ← resource capacities
+```
 
 ---
 
@@ -40,17 +49,14 @@
 
 - [x] Read `.SCH` file line by line; strip blank lines
 - [x] Parse header: extract `n` (real activities) and `K` (resource types)
-- [x] Parse **activity block** (`n+2` rows): for each activity store list of `(successor, lag)` pairs
-      Format: `actId  modes  numSucc  succ1 succ2 ...  [lag1] [lag2] ...`
-- [x] Parse **resource block** (`n+2` rows): extract duration `d[i]` (3rd field) and `r[i][k]`
-      Format: `actId  modes  duration  res1 res2 res3 res4 res5`
+- [x] Parse **activity block** (`n+2` rows): for each activity store list of successor IDs
+      Format: `actId  numSucc  succ1  succ2  ...`
+- [x] Parse **resource block** (`n+2` rows): extract duration `d[i]` (2nd field) and `r[i][k]`
+      Format: `actId  duration  res1  res2  res3  res4  res5`
 - [x] Parse last line: store `R[k]` for `k in 0..K-1`
 - [x] Build `successors[i]` and `predecessors[j]` adjacency lists
 - [x] `validate_parse` sanity checker: dummy durations=0, all-zero resources, no orphan activities
-- [x] Tested on J10/PSP1.SCH and J20/PSP1.SCH — all checks pass
-
-**Key insight:** Negative lags (e.g. `[-22]`) create backward arcs that form cycles in the
-constraint graph. Topological sort breaks here — Bellman-Ford is required (Phase 2).
+- [x] Tested on all 270 J10 and 270 J20 instances — format confirmed consistent across all files ✅
 
 ---
 
@@ -58,19 +64,17 @@ constraint graph. Topological sort breaks here — Bellman-Ford is required (Pha
 
 **Status:** Not started
 
-- [ ] Run **Bellman-Ford** from node 0 to compute `EST[i]` (Earliest Start Time)
-  - Forward arc `(i, j, L≥0)`: `EST[j] = max(EST[j], EST[i] + L)`
-  - Backward arc `(i, j, L<0)`: treat as forward arc `(j, i, -L)`, i.e. `EST[i] = max(EST[i], EST[j] - L)`
-  - Run `n+1` relaxation rounds (standard Bellman-Ford on `n+2` nodes)
-- [ ] Run backwards Bellman-Ford from node `n+1` to compute `LFT[i]` (Latest Finish Time)
-- [ ] Compute **network lower bound**: `LB_net` = longest path from 0 to `n+1`
+- [ ] Compute `EST[i]` (Earliest Start Time) via **topological sort + longest path** on the DAG:
+  - Initialise `EST[0] = 0`
+  - For each activity in topological order: `EST[j] = max(EST[j], EST[i] + d[i])` for every arc `i → j`
+- [ ] Compute `LFT[i]` (Latest Finish Time) by running the same process **backwards** from `n+1`:
+  - Initialise `LFT[n+1] = EST[n+1]`
+  - For each activity in reverse topological order: `LFT[i] = min(LFT[i], LFT[j] - d[i])` for every arc `i → j`
+- [ ] Compute **network lower bound**: `LB_net = EST[n+1]` (longest path through the DAG)
 - [ ] Compute **resource lower bound** for each resource type k:
       `LB_res[k] = ceil( Σ d[i] * r[i][k] for i in 1..n ) / R[k]`
 - [ ] `LB = max(LB_net, max over k of LB_res[k])`
-- [ ] Assert `EST[i] + d[i] <= LFT[i]` for all real activities
-
-**Pitfall:** Bellman-Ford must handle negative-lag arcs carefully. Do NOT just flip sign — convert
-`(i→j, lag<0)` to a reverse arc `(j→i, -lag)` for EST propagation.
+- [ ] Assert `EST[i] + d[i] <= LFT[i]` for all real activities (sanity check)
 
 ---
 
@@ -82,15 +86,14 @@ constraint graph. Topological sort breaks here — Bellman-Ford is required (Pha
   1. Maintain a set of *eligible* activities (all predecessors already scheduled)
   2. Pick one eligible activity using a priority rule
   3. Compute its earliest feasible start time:
-     - **(a) Precedence:** `start >= max(S[pred] + lag)` over all predecessors with `lag > 0`
-     - **(b) Max-lag:** `start <= min upper bound` from all backward arcs
-     - **(c) Resources:** shift `start` forward until `[start, start+d[i])` fits within capacity
+     - **(a) Precedence:** `start = max(S[pred] + d[pred])` over all predecessors
+     - **(b) Resources:** shift `start` forward until `[start, start+d[i])` fits within capacity
   4. Schedule it, update eligible set
   5. Repeat until all `n` real activities are scheduled
 - [ ] Implement **6 priority rules** (pick the eligible activity with the best score):
   - **SPT** — Shortest Processing Time: smallest `d[i]`
   - **LPT** — Longest Processing Time: largest `d[i]`
-  - **MTS** — Most Total Successors: most downstream activities (transitive)
+  - **MTS** — Most Total Successors: most downstream activities (transitive count)
   - **MC**  — Most Critical: smallest slack `LFT[i] - EST[i] - d[i]` (ascending)
   - **MR**  — Most Resources: highest total resource demand `Σ r[i][k]`
   - **LR**  — Least Resources: lowest total resource demand
@@ -109,7 +112,6 @@ Check `S[i] <= t < S[i]+d[i]`, not `S[i] <= t <= S[i]+d[i]`.
 
 - [ ] **Destroy operator:** randomly unschedule 20–40% of activities
   - For J10: destroy 3–4 activities; for J20: destroy 5–8
-  - If removing activity `i` violates a max-lag upper bound on another activity `j`, unschedule `j` too (cascade)
 - [ ] **Repair operator:** re-run SGS on the partial schedule to reschedule destroyed activities
 - [ ] **Acceptance criterion (Simulated Annealing):**
   - Accept if `new_Cmax < best_Cmax`
@@ -117,9 +119,6 @@ Check `S[i] <= t < S[i]+d[i]`, not `S[i] <= t <= S[i]+d[i]`.
   - Cool temperature: `T *= 0.995` to `0.9999` each iteration
 - [ ] Track **best solution** seen across all iterations
 - [ ] Stop when `time.time() - start >= 28.0`; return best immediately
-
-**Why LNS over Genetic Algorithm:** LNS+SA converges faster per iteration and handles
-max-lag cascade constraints more cleanly than permutation-based crossover in a GA.
 
 ---
 
@@ -146,8 +145,7 @@ max-lag cascade constraints more cleanly than permutation-based crossover in a G
 - [ ] Do not over-fit to J10/J20 — grading uses harder unseen instances
 
 **Validation checklist (run before every output):**
-- [ ] Precedence: `S[j] >= S[i] + lag` for all arcs with `lag > 0`
-- [ ] Max-lag: `S[j] <= S[i] + |lag|` for all arcs with `lag < 0`
+- [ ] Precedence: `S[j] >= S[i] + d[i]` for all arcs `i → j`
 - [ ] Resource: at every time `t`, `Σ r[i][k]` for active `i` ≤ `R[k]`
 - [ ] Non-negativity: `S[i] >= 0` for all `i`
 - [ ] All `n` real activities have an assigned start time
@@ -161,7 +159,7 @@ max-lag cascade constraints more cleanly than permutation-based crossover in a G
 - [ ] Describe algorithm design and rationale for choices (why Serial SGS + LNS+SA)
 - [ ] Report Gap(%) statistics on J10 and J20 (average, worst, % within target)
 - [ ] Analyse time budget usage (how many LNS iterations per instance on average)
-- [ ] Discuss tradeoffs (e.g. why LNS over B&B for J20, why SA acceptance over greedy)
+- [ ] Discuss tradeoffs (e.g. why LNS+SA over Branch and Bound)
 - [ ] Prepare slides if required
 
 ---
@@ -170,13 +168,10 @@ max-lag cascade constraints more cleanly than permutation-based crossover in a G
 
 | # | Pitfall | Where It Bites |
 |---|---------|----------------|
-| 1 | Negative lags create **cycles** — use Bellman-Ford, not topological sort | Phase 2, 3 |
-| 2 | Resource interval is `[S[i], S[i]+d[i])` — **exclusive** upper bound | Phase 3, 6 |
-| 3 | Always propagate **max-lag upper bounds** after scheduling each activity | Phase 3, 4 |
-| 4 | Check wall-clock time **before** every iteration, not after | Phase 5 |
-| 5 | Lag values can be **large and negative** — use signed integers everywhere | Phase 1, 2 |
-| 6 | Do not assume a fixed Cmax upper bound — **allocate resource tracking dynamically** | Phase 3 |
-| 7 | LNS destroy must **cascade**: removing `i` may force removal of activities with tight max-lag to `i` | Phase 4 |
+| 1 | Resource interval is `[S[i], S[i]+d[i])` — **exclusive** upper bound | Phase 3, 6 |
+| 2 | Check wall-clock time **before** every iteration, not after | Phase 5 |
+| 3 | Do not assume a fixed Cmax upper bound — allocate resource tracking dynamically | Phase 3 |
+| 4 | Dummy activities (0 and n+1) have `d=0` — never consume resources or block time | Phase 3 |
 
 ---
 
