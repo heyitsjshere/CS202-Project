@@ -524,8 +524,11 @@ def destroy_and_repair(inst, S, est, lft, succ_counts, num_destroy):
 
 def lns_sa(inst, S_init, start_time, time_limit=28.0):
     """
-    Large Neighbourhood Search + Simulated Annealing.
-    Improves initial schedule S_init for up to time_limit seconds.
+    Improvement phase: run SGS multiple times with shuffled priority orders.
+
+    This is simpler than destroy-repair and guaranteed to produce valid schedules.
+    The randomness comes from randomly shuffling which rule we use and which
+    eligible activity we pick when priorities are tied.
     """
     n = inst.n
     est, lft = compute_est_lft(inst)
@@ -534,44 +537,22 @@ def lns_sa(inst, S_init, start_time, time_limit=28.0):
     S_best = S_init[:]
     cmax_best = S_best[n + 1]
 
-    S_current = S_init[:]
-    cmax_current = cmax_best
-
-    # SA parameters
-    T_init = 5.0
-    T = T_init
-    cooling_rate = 0.995
-
     iteration = 0
     while time.time() - start_time < time_limit:
         iteration += 1
 
-        # Destroy and repair
-        num_destroy = 4 if n == 10 else 6  # J10: 3-4, J20: 5-8
-        S_new = destroy_and_repair(inst, S_current, est, lft, succ_counts, num_destroy)
+        # Pick a random rule
+        rules = ['SPT', 'LPT', 'MTS', 'MC', 'MR', 'LR']
+        rule = random.choice(rules)
+
+        # Run SGS with that rule
+        S_new = serial_sgs(inst, est, lft, rule, succ_counts)
         cmax_new = S_new[n + 1]
-
-        # Simulated Annealing acceptance
-        delta = cmax_new - cmax_current
-        if delta < 0:
-            # Better solution — always accept
-            accept = True
-        else:
-            # Worse solution — accept with probability
-            prob = math.exp(-delta / T) if T > 0 else 0
-            accept = random.random() < prob
-
-        if accept:
-            S_current = S_new
-            cmax_current = cmax_new
 
         # Track best
         if cmax_new < cmax_best:
             S_best = S_new[:]
             cmax_best = cmax_new
-
-        # Cool temperature
-        T *= cooling_rate
 
     return S_best
 
