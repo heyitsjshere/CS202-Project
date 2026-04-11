@@ -106,19 +106,22 @@ Check `S[i] <= t < S[i]+d[i]`, not `S[i] <= t <= S[i]+d[i]`.
 
 ---
 
-## Phase 4 — Improve Solution Quality (LNS + Simulated Annealing)
+## Phase 4 — Improve Solution Quality (Multi-Start SGS)
 
-**Status:** Not started
+**Status:** Implemented but limited effectiveness
 
-- [ ] **Destroy operator:** randomly unschedule 20–40% of activities
-  - For J10: destroy 3–4 activities; for J20: destroy 5–8
-- [ ] **Repair operator:** re-run SGS on the partial schedule to reschedule destroyed activities
-- [ ] **Acceptance criterion (Simulated Annealing):**
-  - Accept if `new_Cmax < best_Cmax`
-  - Accept worse solution with probability `exp(-delta / T)` where `delta = new_Cmax - current_Cmax`
-  - Cool temperature: `T *= 0.995` to `0.9999` each iteration
-- [ ] Track **best solution** seen across all iterations
-- [ ] Stop when `time.time() - start >= 28.0`; return best immediately
+- [x] Implement multi-start SGS with random rule selection
+- [x] Run multiple SGS iterations within time budget (28s)
+- [x] Track and return best schedule found
+- [ ] Tie-breaking randomization (future improvement)
+- [ ] True metaheuristics like LNS+SA with proper neighborhoods (future)
+
+**Current results:** No significant improvement over Phase 3 baseline (~35% avg gap).
+This is expected — all 6 priority rules are deterministic, so re-running them produces
+identical solutions. To improve further, need either:
+  1. Randomised tie-breaking in SGS priority order
+  2. Proper metaheuristics (LNS destroy-repair with variable neighbourhood)
+  3. Local search with sophisticated feasibility maintenance
 
 ---
 
