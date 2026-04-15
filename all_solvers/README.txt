@@ -107,3 +107,17 @@ solver_optimal.py
 - Uses exact branch-and-bound from solver.py
 - Can prove optimal on easier/smaller instances
 - Not scalable for large sets under tight limits
+
+
+
+
+# With Multithreading (NEW CHANGE)
+
+# Single instance (unchanged)
+python3 all_solvers/solver_optimal.py sm_j10/PSP1.SCH
+
+# Batch with 8 workers
+python3 all_solvers/solver_optimal.py --dataset sm_j10 --workers 8
+
+# First 20 instances only
+python3 all_solvers/solver_optimal.py --dataset sm_j20 --first-n 20 --time-limit 5
