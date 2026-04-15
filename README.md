@@ -2,6 +2,18 @@
 
 RCPSP solver project with multiple heuristic solvers and one exact optimal solver.
 
+## Project Summary
+
+This project solves Resource-Constrained Project Scheduling Problem (RCPSP) instances from two datasets (`sm_j10` and `sm_j20`) using multiple solver strategies, then compares performance through standardized benchmark scripts. The workflow is: parse instance -> run selected solver -> validate schedule -> record per-instance output to CSV for analysis.
+
+Core folders:
+
+- `all_solvers/`: solver implementations (`solver_1` to `solver_4` heuristics, plus `solver_optimal` exact branch-and-bound).
+- `all_solver_benchmarks/`: batch benchmark runners with multiprocessing workers and uniform CSV output.
+- `utils/`: shared parser and helper modules used by benchmarks and solver components.
+- `sm_j10/`, `sm_j20/`: benchmark instance datasets.
+- `results/`: generated CSV outputs for each solver run.
+
 ## Quick Start
 
 Run any benchmark in parallel with workers:
@@ -41,7 +53,7 @@ Default files:
 - `benchmark_solver_2.py` -> `results/solver_2_results.csv`
 - `benchmark_solver_3.py` -> `results/solver_3_results.csv`
 - `benchmark_solver_4.py` -> `results/solver_4_results.csv`
-- `benchmark_solver_optimal.py` -> `results/solver_optimal_results.csv`
+- `benchmark_solver_optimal.py` -> `results/solver_optimal_sm_j10_results.csv` or `results/solver_optimal_sm_j20_results.csv`
 
 Each CSV row includes status values.
 
