@@ -89,7 +89,7 @@ def main():
         raise FileNotFoundError(f"No PSP*.SCH files found in {args.dataset}")
 
     workers = args.workers or os.cpu_count() or 1
-    script_path = str(root / "solver2_fixed.py")
+    script_path = str(root / "all_solvers" / "solver_2.py")
 
     print("=" * 96)
     print(
