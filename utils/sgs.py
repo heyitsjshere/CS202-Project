@@ -1,9 +1,6 @@
 import heapq
 
-try:
-    from .graph_utils import build_graph, compute_critical_path
-except ImportError:
-    from graph_utils import build_graph, compute_critical_path
+from utils.graph_utils import build_graph, compute_critical_path
 
 
 def sgs(instance, priority_bias=None):
