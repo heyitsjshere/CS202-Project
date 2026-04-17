@@ -792,30 +792,41 @@ def solve_rcpsp(
     best_rule: Optional[str] = None
     iterations = 0
     last_errors: List[str] = []
+    no_improve_iters = 0
+    # Fair stagnation control: allow more search effort before early stop.
+    # This gives the solver a substantial chance to explore/improve while
+    # still permitting an early exit on clear stagnation.
+    stall_limit = max(240, inst.num_activities * 20)
+    min_iterations_before_stall_exit = max(len(rules) * 8, inst.num_activities * 8)
 
     # Helper to evaluate one SSGS run.
     def try_rule(rule: RuleBundle, local_rng: random.Random) -> None:
-        nonlocal best_starts, best_obj, best_rule, iterations, last_errors
+        nonlocal best_starts, best_obj, best_rule, iterations, last_errors, no_improve_iters
         iterations += 1
         try:
             starts = serial_schedule_generation_scheme(inst, rule.key, rule.selector, local_rng)
         except Exception as exc:
             last_errors = [f"{type(exc).__name__}: {exc}"]
+            no_improve_iters += 1
             return
         errors = validate_schedule(inst, starts)
         if errors:
             last_errors = errors
+            no_improve_iters += 1
             return
         obj = makespan(inst, starts)
         if best_obj is None or obj < best_obj:
             best_starts = list(starts)
             best_obj = obj
             best_rule = rule.name
+            no_improve_iters = 0
             if verbose:
                 print(
                     f"[info] improved by {rule.name}: makespan={obj}",
                     file=sys.stderr,
                 )
+        else:
+            no_improve_iters += 1
 
     # Phase A: deterministic baselines.
     for rule in rules:
@@ -825,18 +836,30 @@ def solve_rcpsp(
         try_rule(rule, random.Random(rng.randrange(1 << 30)))
 
     # Phase B: time-bounded randomized multi-start.
-    # We bias toward the randomized variants but occasionally revisit deterministic ones.
+    # Stronger exploration profile:
+    # - mostly randomized rule variants
+    # - occasional deterministic intensification
+    # - occasional broad shake over all rules
     while time.perf_counter() - t0 < time_limit_seconds:
         # Stop slightly early so the caller can still validate/print safely.
         elapsed = time.perf_counter() - t0
         if elapsed >= time_limit_seconds - 0.02:
             break
+        if (
+            best_starts is not None
+            and iterations >= min_iterations_before_stall_exit
+            and no_improve_iters >= stall_limit
+        ):
+            break
 
-        # 80% randomized, 20% deterministic.
-        if rng.random() < 0.8:
+        # 75% randomized, 15% deterministic, 10% broad shake over all rules.
+        roll = rng.random()
+        if roll < 0.75:
             candidate_rules = [rule for rule in rules if rule.name.startswith("rand_top3_")]
-        else:
+        elif roll < 0.90:
             candidate_rules = [rule for rule in rules if not rule.name.startswith("rand_top3_")]
+        else:
+            candidate_rules = rules
         rule = rng.choice(candidate_rules)
         try_rule(rule, random.Random(rng.randrange(1 << 30)))
 

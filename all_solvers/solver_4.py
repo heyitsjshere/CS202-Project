@@ -491,7 +491,7 @@ def _evaluate_keys(instance, metrics, keys, justify_passes=1):
     return schedule, checked_mk
 
 
-def classify_and_solve_best(instance, time_limit_s=2.0, seed=42):
+def classify_and_solve_best(instance, time_limit_s=2.0, seed=42, enable_multi_seed=True):
     if instance.n <= 0:
         return "feasible", [], 0, ""
 
@@ -503,12 +503,64 @@ def classify_and_solve_best(instance, time_limit_s=2.0, seed=42):
     except ValueError as exc:
         return "true_infeasible", None, None, str(exc)
 
+    budget = max(0.2, float(time_limit_s))
+
+    # Multi-seed portfolio: split budget across different seeds and keep best.
+    if enable_multi_seed and budget >= 1.0:
+        if budget >= 24.0:
+            seed_runs = 6
+        elif budget >= 12.0:
+            seed_runs = 4
+        elif budget >= 6.0:
+            seed_runs = 3
+        else:
+            seed_runs = 2
+
+        per_run_budget = max(0.2, budget / seed_runs)
+        best_status = "heuristic_failed"
+        best_schedule = None
+        best_mk = None
+        best_msg = ""
+
+        for i in range(seed_runs):
+            sub_seed = int(seed + 10007 * i)
+            status_i, schedule_i, mk_i, msg_i = classify_and_solve_best(
+                instance,
+                time_limit_s=per_run_budget,
+                seed=sub_seed,
+                enable_multi_seed=False,
+            )
+
+            if status_i == "feasible" and schedule_i is not None and mk_i is not None:
+                if best_mk is None or mk_i < best_mk:
+                    best_status = "feasible"
+                    best_schedule = list(schedule_i)
+                    best_mk = mk_i
+                    best_msg = msg_i
+            elif best_status != "feasible" and status_i == "true_infeasible":
+                best_status = "true_infeasible"
+                best_schedule = None
+                best_mk = None
+                best_msg = msg_i
+
+        if best_status == "feasible":
+            return (
+                "feasible",
+                best_schedule,
+                best_mk,
+                f"multi_seed runs={seed_runs}, per_run={per_run_budget:.2f}s | {best_msg}",
+            )
+
+        if best_status == "true_infeasible":
+            return "true_infeasible", None, None, best_msg or "capacity/precedence infeasible"
+
+        return "heuristic_failed", None, None, "multi_seed failed to find feasible schedule"
+
     rng = random.Random(seed)
     metrics = _compute_metrics(instance)
     features = metrics["features"]
 
     start_clock = time.perf_counter()
-    budget = max(0.2, float(time_limit_s))
     deadline = start_clock + budget
 
     best_schedule = None
@@ -562,6 +614,8 @@ def classify_and_solve_best(instance, time_limit_s=2.0, seed=42):
     op_names = ["random", "critical", "resource"]
     op_weights = {k: 1.0 for k in op_names}
     op_success = {k: 0 for k in op_names}
+    op_scores = {k: 1.0 for k in op_names}
+    reaction = 0.15
 
     tabu = deque(maxlen=256)
     tabu_set = set()
@@ -583,28 +637,90 @@ def classify_and_solve_best(instance, time_limit_s=2.0, seed=42):
                 return k
         return op_names[-1]
 
+    def update_operator(op, reward):
+        # Recency-weighted ALNS reaction update.
+        for k in op_names:
+            target = reward if k == op else 0.0
+            op_scores[k] = (1.0 - reaction) * op_scores[k] + reaction * target
+            op_weights[k] = max(0.25, min(10.0, 0.35 + op_scores[k]))
+
     no_improve_iters = 0
     temp = max(0.5, 0.03 * best_mk)
+    search_iters = 0
+    # More exploration: avoid stopping on moderate plateaus.
+    stall_limit = max(500, instance.n * 14)
+    min_iters_before_stall_exit = max(120, instance.n * 10)
+    hard_kick_every = max(70, instance.n * 5)
+    max_restarts = max(2, min(8, int(budget // 2) + 1))
+    restarts_used = 0
+    reheat_every = max(25, instance.n * 2)
 
     while time.perf_counter() < deadline:
+        search_iters += 1
         op = pick_operator()
+
+        elapsed_now = time.perf_counter() - start_clock
+        progress = min(1.0, max(0.0, elapsed_now / max(1e-9, budget)))
+        if progress < 0.40:
+            destroy_fraction = 0.24
+            destroy_magnitude = 1.0
+            base_justify_passes = 1
+            pr_alpha_lo, pr_alpha_hi = 0.20, 0.60
+        elif progress < 0.80:
+            destroy_fraction = 0.20
+            destroy_magnitude = 0.80
+            base_justify_passes = 1
+            pr_alpha_lo, pr_alpha_hi = 0.30, 0.70
+        else:
+            # Late-stage intensification around elites/incumbent.
+            destroy_fraction = 0.16
+            destroy_magnitude = 0.55
+            base_justify_passes = 2
+            pr_alpha_lo, pr_alpha_hi = 0.55, 0.85
 
         # ALNS destroy step
         if op == "random":
-            cand_keys = _destroy_random(current_keys, rng, fraction=0.22, magnitude=0.9)
+            cand_keys = _destroy_random(
+                current_keys,
+                rng,
+                fraction=destroy_fraction,
+                magnitude=destroy_magnitude,
+            )
         elif op == "critical":
-            cand_keys = _destroy_critical(current_keys, metrics, rng, fraction=0.20, magnitude=0.8)
+            cand_keys = _destroy_critical(
+                current_keys,
+                metrics,
+                rng,
+                fraction=destroy_fraction,
+                magnitude=destroy_magnitude,
+            )
         else:
-            cand_keys = _destroy_resource(current_keys, metrics, rng, fraction=0.20, magnitude=0.8)
+            cand_keys = _destroy_resource(
+                current_keys,
+                metrics,
+                rng,
+                fraction=destroy_fraction,
+                magnitude=destroy_magnitude,
+            )
 
         # Path relinking toward incumbent best
         if best_keys is not None:
-            alpha = rng.uniform(0.25, 0.65)
+            alpha = rng.uniform(pr_alpha_lo, pr_alpha_hi)
             cand_keys = _path_relink(cand_keys, best_keys, alpha=alpha)
 
         # Occasional GA crossover with another elite candidate
         if len(population) >= 2 and rng.random() < 0.25:
-            elite = population[rng.randrange(min(5, len(population)))]
+            elite_pool = population[: min(8, len(population))]
+            if elite_pool:
+                # Diversity-aware elite pick: bias toward keys far from current point.
+                dist_ranked = sorted(
+                    elite_pool,
+                    key=lambda item: sum(abs(a - b) for a, b in zip(item[1], current_keys)),
+                    reverse=True,
+                )
+                elite = dist_ranked[rng.randrange(min(3, len(dist_ranked)))]
+            else:
+                elite = population[0]
             cand_keys = _crossover(cand_keys, elite[1], rng)
             cand_keys = _mutate(cand_keys, rng, sigma=0.12, prob=0.12)
 
@@ -612,18 +728,43 @@ def classify_and_solve_best(instance, time_limit_s=2.0, seed=42):
         if sig in tabu_set:
             no_improve_iters += 1
             temp = max(0.25, temp * 0.995)
-            if no_improve_iters > 40 and time.perf_counter() - start_clock > 0.35 * budget:
+            update_operator(op, 0.0)
+            if (
+                no_improve_iters >= stall_limit
+                and search_iters >= min_iters_before_stall_exit
+            ):
                 break
             continue
 
         try:
-            cand_schedule, cand_mk = _evaluate_keys(instance, metrics, cand_keys, justify_passes=1)
+            cand_schedule, cand_mk = _evaluate_keys(
+                instance,
+                metrics,
+                cand_keys,
+                justify_passes=base_justify_passes,
+            )
         except ValueError as exc:
             last_error = str(exc)
             tabu_add(sig)
             no_improve_iters += 1
             temp = max(0.25, temp * 0.995)
+            update_operator(op, 0.0)
             continue
+
+        # Selective intensification: polish only near-incumbent candidates.
+        near_best_gap = max(1, int(0.03 * best_mk)) if best_mk < float("inf") else 2
+        if cand_mk <= best_mk + near_best_gap:
+            try:
+                polished_schedule, polished_mk = _evaluate_keys(
+                    instance,
+                    metrics,
+                    cand_keys,
+                    justify_passes=2,
+                )
+                if polished_mk < cand_mk:
+                    cand_schedule, cand_mk = polished_schedule, polished_mk
+            except ValueError:
+                pass
 
         delta = cand_mk - current_mk
         accept = delta <= 0 or rng.random() < math.exp(-delta / max(0.25, temp))
@@ -634,28 +775,101 @@ def classify_and_solve_best(instance, time_limit_s=2.0, seed=42):
             current_mk = cand_mk
 
         if cand_mk < best_mk:
+            prev_best = best_mk
             best_mk = cand_mk
             best_keys = list(cand_keys)
             best_schedule = list(cand_schedule)
             op_success[op] += 1
-            op_weights[op] = min(8.0, op_weights[op] + 0.25)
             no_improve_iters = 0
+            gain = (prev_best - cand_mk) / max(1.0, prev_best)
+            update_operator(op, 1.0 + max(0.0, gain))
         else:
             no_improve_iters += 1
-            op_weights[op] = max(0.4, op_weights[op] * 0.997)
+            reward = 0.1 if accept else 0.0
+            update_operator(op, reward)
 
         # Maintain tiny elite pool
         population.append((cand_mk, list(cand_keys), list(cand_schedule)))
         population.sort(key=lambda x: x[0])
-        if len(population) > 16:
-            population = population[:16]
+        if len(population) > 24:
+            population = population[:24]
 
         tabu_add(sig)
         temp = max(0.25, temp * 0.998)
 
+        # Reheat SA temperature on stagnation to allow escapes.
+        if no_improve_iters > 0 and no_improve_iters % reheat_every == 0:
+            temp = min(max(0.5, 0.06 * best_mk), temp * 1.25)
+
+        # Hard kick / restart when stagnating: jump to another elite basin.
+        if (
+            no_improve_iters > 0
+            and no_improve_iters % hard_kick_every == 0
+            and best_keys is not None
+            and population
+            and restarts_used < max_restarts
+        ):
+            elite = population[rng.randrange(min(8, len(population)))]
+            alpha = rng.uniform(0.35, 0.75)
+            kicked = _path_relink(best_keys, elite[1], alpha=alpha)
+            kicked = _mutate(kicked, rng, sigma=0.28, prob=0.28)
+            try:
+                kick_schedule, kick_mk = _evaluate_keys(instance, metrics, kicked, justify_passes=2)
+                current_keys = list(kicked)
+                current_schedule = list(kick_schedule)
+                current_mk = kick_mk
+                population.append((kick_mk, list(kicked), list(kick_schedule)))
+                population.sort(key=lambda x: x[0])
+                if len(population) > 24:
+                    population = population[:24]
+                if kick_mk < best_mk:
+                    best_mk = kick_mk
+                    best_keys = list(kicked)
+                    best_schedule = list(kick_schedule)
+                    no_improve_iters = 0
+            except ValueError:
+                pass
+            restarts_used += 1
+
         # Early stop after enough stagnation
-        if no_improve_iters > 55 and time.perf_counter() - start_clock > 0.45 * budget:
+        if (
+            no_improve_iters >= stall_limit
+            and search_iters >= min_iters_before_stall_exit
+        ):
             break
+
+    # Final elite intensification pass (quality-focused endgame).
+    if best_schedule is not None and population:
+        # Re-evaluate top elites with stronger justification.
+        elite_top = population[: min(8, len(population))]
+        for _, e_keys, _ in elite_top:
+            try:
+                e_schedule, e_mk = _evaluate_keys(instance, metrics, e_keys, justify_passes=3)
+                if e_mk < best_mk:
+                    best_mk = e_mk
+                    best_keys = list(e_keys)
+                    best_schedule = list(e_schedule)
+            except ValueError:
+                pass
+
+        # Extra path-relink polish among best elites.
+        if len(elite_top) >= 2 and best_keys is not None:
+            ref_keys = elite_top[1][1]
+            for alpha in (0.55, 0.72):
+                try:
+                    mix_keys = _path_relink(best_keys, ref_keys, alpha=alpha)
+                    mix_schedule, mix_mk = _evaluate_keys(
+                        instance,
+                        metrics,
+                        mix_keys,
+                        justify_passes=3,
+                    )
+                    if mix_mk < best_mk:
+                        best_mk = mix_mk
+                        best_keys = list(mix_keys)
+                        best_schedule = list(mix_schedule)
+                except ValueError:
+                    pass
 
     if best_schedule is None:
         return "heuristic_failed", None, None, (last_error or "no feasible schedule found")
@@ -663,7 +877,7 @@ def classify_and_solve_best(instance, time_limit_s=2.0, seed=42):
     elapsed = time.perf_counter() - start_clock
     msg = (
         f"solver_4 hybrid(ALNS+GA+PR+tabu), elapsed={elapsed:.3f}s, "
-        f"ops={op_success}"
+        f"ops={op_success}, restarts={restarts_used}"
     )
     return "feasible", best_schedule, best_mk, msg
 

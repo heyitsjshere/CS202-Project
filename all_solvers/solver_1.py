@@ -383,6 +383,12 @@ def classify_and_solve_multistart(
 
 	# Local search in bias space: mutate a few priorities and keep improving moves.
 	local_improvements = 0
+	no_improve_iters = 0
+	# More exploration: require substantial non-improvement before early exit.
+	stall_limit = max(24, int(ls_iters * 0.80)) if ls_iters > 0 else 0
+	min_iters_before_stall_exit = (
+		min(ls_iters, max(18, int(ls_iters * 0.60))) if ls_iters > 0 else 0
+	)
 	if best_bias is not None and ls_iters > 0:
 		current_bias = list(best_bias)
 		current_makespan = best_makespan
@@ -417,17 +423,22 @@ def classify_and_solve_multistart(
 				best_schedule = iter_best_schedule
 				best_makespan = iter_best_makespan
 				local_improvements += 1
+				no_improve_iters = 0
 			else:
+				no_improve_iters += 1
 				# Gentle cooling and occasional kick to escape plateaus.
 				step = max(0.02, step * 0.90)
-				if it % 5 == 4:
+				if it % 4 == 3:
 					for j in rng.sample(range(n), max(1, n // 12)):
 						current_bias[j] += rng.uniform(-0.15, 0.15)
+
+			if no_improve_iters >= stall_limit and (it + 1) >= min_iters_before_stall_exit:
+				break
 
 	if best_schedule is not None:
 		msg = f"multistart={trials}"
 		if ls_iters > 0:
-			msg += f", local_search={ls_iters}, improved_iters={local_improvements}"
+			msg += f", local_search={ls_iters}, improved_iters={local_improvements}, stalled_after={no_improve_iters}"
 		return "feasible", best_schedule, best_makespan, msg
 
 	return "heuristic_failed", None, None, (last_error or "no feasible schedule found in multistart")

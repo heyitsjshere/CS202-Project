@@ -15,12 +15,20 @@ from utils.parser import parse_sch
 from all_solvers.solver_3 import classify_and_solve_best
 
 
+def _output_line_from_schedule(instance, status, schedule):
+    if status == "feasible" and schedule is not None:
+        if instance.n <= 2:
+            return ""
+        return ", ".join(str(schedule[j]) for j in range(1, instance.n - 1))
+    return "-1"
+
+
 def _solve_one(args_tuple):
     """Worker: run solver_3 directly on a single instance."""
     filepath, time_limit, starts, seed, dataset = args_tuple
     inst = parse_sch(filepath)
     t0 = time.perf_counter_ns()
-    status, _, mk, _ = classify_and_solve_best(
+    status, schedule, mk, _ = classify_and_solve_best(
         inst,
         time_limit_s=max(0.2, time_limit),
         starts=max(1, starts),
@@ -28,7 +36,15 @@ def _solve_one(args_tuple):
     )
     t1 = time.perf_counter_ns()
     ms = (t1 - t0) / 1_000_000
-    return Path(filepath).name, status, mk, ms, dataset
+    if status == "feasible":
+        format_ok = schedule is not None and len(schedule) == inst.n
+    elif status in ("true_infeasible", "heuristic_failed"):
+        # Non-feasible statuses correspond to printing -1 in solver CLI.
+        format_ok = True
+    else:
+        format_ok = False
+    output_line = _output_line_from_schedule(inst, status, schedule)
+    return Path(filepath).name, status, mk, ms, dataset, format_ok, output_line
 
 
 def parse_args():
@@ -75,6 +91,7 @@ def main():
     ]
 
     counts = {"feasible": 0, "true_infeasible": 0, "heuristic_failed": 0, "error": 0}
+    output_format_ok_count = 0
     times = []
     wall_start = time.perf_counter()
 
@@ -89,19 +106,21 @@ def main():
     if csv_file.tell() == 0:
         csv_writer.writerow([
             "dataset", "instance", "solver", "status", "makespan", "time_ms",
-            "time_limit_s", "workers", "seed", "starts",
+            "time_limit_s", "workers", "seed", "starts", "output_format_ok", "output_line",
         ])
 
     print(f"CSV file:             {csv_path}")
 
     try:
         with mp.Pool(processes=workers) as pool:
-            for name, status, makespan, elapsed_ms, dataset in pool.imap_unordered(_solve_one, tasks):
+            for name, status, makespan, elapsed_ms, dataset, format_ok, output_line in pool.imap_unordered(_solve_one, tasks):
                 times.append(elapsed_ms)
                 if status in counts:
                     counts[status] += 1
                 else:
                     counts["error"] += 1
+                if format_ok:
+                    output_format_ok_count += 1
                 csv_writer.writerow([
                     dataset,
                     name,
@@ -113,6 +132,8 @@ def main():
                     workers,
                     args.seed,
                     max(1, args.starts),
+                    str(format_ok).lower(),
+                    output_line,
                 ])
                 csv_file.flush()
 
@@ -130,6 +151,7 @@ def main():
     print(f"True infeasible: {counts['true_infeasible']}")
     print(f"Heuristic failed: {counts['heuristic_failed']}")
     print(f"Error: {counts['error']}")
+    print(f"Output-format valid: {output_format_ok_count}/{len(files)}")
     if times:
         print(f"Avg time: {sum(times)/len(times):.1f} ms")
         print(f"Median time: {statistics.median(times):.1f} ms")

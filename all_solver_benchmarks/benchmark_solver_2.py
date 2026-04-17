@@ -32,6 +32,20 @@ def _schedule_from_output(instance, output_line):
     return starts
 
 
+def _output_format_ok(instance, output_line):
+    text = output_line.strip()
+    if text == "-1":
+        return True
+    parts = [x.strip() for x in text.split(",") if x.strip()]
+    if len(parts) != (instance.n - 2):
+        return False
+    try:
+        [int(x) for x in parts]
+    except ValueError:
+        return False
+    return True
+
+
 def _solve_one(args_tuple):
     """Worker: run solver_2 via subprocess on a single instance."""
     filepath, script_path, time_limit, dataset = args_tuple
@@ -44,24 +58,27 @@ def _solve_one(args_tuple):
     ms = (t1 - t0) / 1_000_000
 
     if proc.returncode != 0:
-        return Path(filepath).name, "error", None, ms, dataset
+        return Path(filepath).name, "error", None, ms, dataset, False, ""
 
     lines = [ln.strip() for ln in proc.stdout.splitlines() if ln.strip()]
     if not lines:
-        return Path(filepath).name, "error", None, ms, dataset
+        return Path(filepath).name, "error", None, ms, dataset, False, ""
+
+    output_line = lines[-1]
+    format_ok = _output_format_ok(inst, output_line)
 
     try:
-        sched = _schedule_from_output(inst, lines[-1])
+        sched = _schedule_from_output(inst, output_line)
     except Exception:
-        return Path(filepath).name, "error", None, ms, dataset
+        return Path(filepath).name, "error", None, ms, dataset, format_ok, output_line
 
     if sched is None:
-        return Path(filepath).name, "heuristic_failed", None, ms, dataset
+        return Path(filepath).name, "heuristic_failed", None, ms, dataset, format_ok, output_line
 
     ok, _, mk = validate_schedule(inst, sched)
     if ok:
-        return Path(filepath).name, "feasible", mk, ms, dataset
-    return Path(filepath).name, "error", None, ms, dataset
+        return Path(filepath).name, "feasible", mk, ms, dataset, format_ok, output_line
+    return Path(filepath).name, "error", None, ms, dataset, format_ok, output_line
 
 
 def parse_args():
@@ -103,6 +120,7 @@ def main():
     tasks = [(str(f), script_path, args.time_limit, args.dataset) for f in files]
 
     counts = {"feasible": 0, "true_infeasible": 0, "heuristic_failed": 0, "error": 0}
+    output_format_ok_count = 0
     times = []
     wall_start = time.perf_counter()
 
@@ -117,17 +135,19 @@ def main():
     if csv_file.tell() == 0:
         csv_writer.writerow([
             "dataset", "instance", "solver", "status", "makespan", "time_ms",
-            "time_limit_s", "workers", "seed", "starts",
+            "time_limit_s", "workers", "seed", "starts", "output_format_ok", "output_line",
         ])
 
     print(f"CSV file:             {csv_path}")
 
     try:
         with mp.Pool(processes=workers) as pool:
-            for name, status, makespan, elapsed_ms, dataset in pool.imap_unordered(_solve_one, tasks):
+            for name, status, makespan, elapsed_ms, dataset, format_ok, output_line in pool.imap_unordered(_solve_one, tasks):
                 times.append(elapsed_ms)
                 if status in counts:
                     counts[status] += 1
+                if format_ok:
+                    output_format_ok_count += 1
                 csv_writer.writerow([
                     dataset,
                     name,
@@ -139,6 +159,8 @@ def main():
                     workers,
                     "",
                     "",
+                    str(format_ok).lower(),
+                    output_line,
                 ])
                 csv_file.flush()
 
@@ -156,6 +178,7 @@ def main():
     print(f"True infeasible: {counts['true_infeasible']}")
     print(f"Heuristic failed: {counts['heuristic_failed']}")
     print(f"Error: {counts['error']}")
+    print(f"Output-format valid: {output_format_ok_count}/{len(files)}")
     if times:
         print(f"Avg time: {sum(times)/len(times):.1f} ms")
         print(f"Median time: {statistics.median(times):.1f} ms")

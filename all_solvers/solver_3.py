@@ -539,9 +539,6 @@ def classify_and_solve_best(instance, time_limit_s=28.0, seed=42, starts=120):
     start_clock = time.perf_counter()
     budget_s = max(0.2, float(time_limit_s))
     deadline = start_clock + budget_s
-    # Approximation-oriented early-stop guard: return early if search stagnates.
-    min_runtime_s = min(budget_s, max(0.15, 0.20 * budget_s))
-    stagnation_window_s = min(2.0, max(0.30, 0.35 * budget_s))
 
     metrics = _compute_metrics(instance)
     features = metrics["features"]
@@ -551,7 +548,6 @@ def classify_and_solve_best(instance, time_limit_s=28.0, seed=42, starts=120):
     best_weights = None
     last_error = ""
     improvements = 0
-    last_improve_t = start_clock
 
     # Deterministic portfolio starts.
     seed_weights = [
@@ -565,7 +561,7 @@ def classify_and_solve_best(instance, time_limit_s=28.0, seed=42, starts=120):
     ]
 
     def try_candidate(weights, activity_noise=0.0):
-        nonlocal best_schedule, best_makespan, best_weights, last_error, improvements, last_improve_t
+        nonlocal best_schedule, best_makespan, best_weights, last_error, improvements
         bias = _bias_from_weights(features, weights)
         if activity_noise > 0:
             m = max(1, n // 10)
@@ -578,7 +574,6 @@ def classify_and_solve_best(instance, time_limit_s=28.0, seed=42, starts=120):
                 best_schedule = schedule
                 best_weights = list(weights)
                 improvements += 1
-                last_improve_t = time.perf_counter()
                 return True
         except ValueError as exc:
             last_error = str(exc)
@@ -605,16 +600,25 @@ def classify_and_solve_best(instance, time_limit_s=28.0, seed=42, starts=120):
     current_mk = best_makespan
     temp = max(1.0, 0.05 * current_mk)
     step = 0.35
+    sa_iters = 0
+    no_improve_iters = 0
+    # More exploration: allow substantially longer SA runs before early stop.
+    stall_limit = max(180, n * 12)
+    min_sa_iters_before_stall_exit = max(90, n * 8)
 
     while time.perf_counter() < deadline:
-        now = time.perf_counter()
-        if (now - start_clock) >= min_runtime_s and (now - last_improve_t) >= stagnation_window_s:
+        if (
+            sa_iters >= min_sa_iters_before_stall_exit
+            and no_improve_iters >= stall_limit
+        ):
             break
+
+        sa_iters += 1
 
         cand_w = [x + rng.gauss(0.0, step) for x in current_w]
         bias = _bias_from_weights(features, cand_w)
 
-        m = max(1, n // 12)
+        m = max(1, n // 10)
         for i in rng.sample(range(n), m):
             bias[i] += rng.uniform(-0.2, 0.2)
 
@@ -622,6 +626,7 @@ def classify_and_solve_best(instance, time_limit_s=28.0, seed=42, starts=120):
             cand_schedule, cand_mk = _evaluate_bias_solution(instance, metrics, bias)
         except ValueError as exc:
             last_error = str(exc)
+            no_improve_iters += 1
             temp = max(0.5, temp * 0.995)
             step = max(0.08, step * 0.999)
             continue
@@ -636,7 +641,9 @@ def classify_and_solve_best(instance, time_limit_s=28.0, seed=42, starts=120):
             best_schedule = cand_schedule
             best_weights = list(cand_w)
             improvements += 1
-            last_improve_t = time.perf_counter()
+            no_improve_iters = 0
+        else:
+            no_improve_iters += 1
 
         temp = max(0.5, temp * 0.996)
         step = max(0.08, step * 0.999)
