@@ -55,7 +55,7 @@ def parse_args():
     p.add_argument("--workers", "-w", type=int, default=None,
                    help="Number of parallel worker processes (default: CPU count)")
     p.add_argument("--csv-file", type=str, default=None,
-                   help="Optional CSV path override (default: results/solver_optimal_results.csv)")
+                   help="Optional CSV path override (default: results/solver_optimal_<dataset>_results.csv)")
     p.add_argument("--log-file", type=str, default=None,
                    help=argparse.SUPPRESS)
     return p.parse_args()
@@ -97,8 +97,9 @@ def main():
 
     results_dir = root / "results"
     results_dir.mkdir(parents=True, exist_ok=True)
+    default_csv = results_dir / f"solver_optimal_{args.dataset}_results.csv"
     csv_path = Path(args.csv_file) if args.csv_file else (
-        Path(args.log_file) if args.log_file else (results_dir / "solver_optimal_results.csv")
+        Path(args.log_file) if args.log_file else default_csv
     )
     csv_path.parent.mkdir(parents=True, exist_ok=True)
     csv_file = open(csv_path, "a", newline="")
