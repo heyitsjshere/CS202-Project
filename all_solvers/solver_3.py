@@ -1,252 +1,10 @@
 import math
 import random
 import time
-import heapq
-from collections import deque
 
-
-class RCPSPInstance:
-    def __init__(self):
-        self.n = 0
-        self.num_resources = 0
-        self.durations = []
-        self.demands = []
-        self.resources = []
-        self.precedence = []
-
-
-def parse_sch(filepath):
-    inst = RCPSPInstance()
-
-    with open(filepath, encoding="utf-8") as f:
-        lines = [line.strip() for line in f if line.strip()]
-
-    def parse_ints(raw_line):
-        cleaned = raw_line.replace("[", " ").replace("]", " ")
-        return [int(x) for x in cleaned.split()]
-
-    idx = 0
-    header = parse_ints(lines[idx])
-    if len(header) < 2:
-        raise ValueError(f"Invalid SCH header in {filepath}")
-
-    n_activities_without_dummies = header[0]
-    r = header[1]
-    expected_n = n_activities_without_dummies + 2
-    idx += 1
-
-    precedence = []
-    seen_ids = set()
-
-    for _ in range(expected_n):
-        parts = parse_ints(lines[idx])
-        idx += 1
-        if len(parts) < 2:
-            raise ValueError(f"Invalid precedence row in {filepath}: {lines[idx - 1]}")
-
-        i = parts[0]
-        if len(parts) == 2:
-            k = parts[1]
-            successors = []
-        elif len(parts) >= 3 and len(parts) == parts[1] + 2:
-            k = parts[1]
-            successors = parts[2:2 + k] if k > 0 else []
-        else:
-            if len(parts) < 3:
-                raise ValueError(f"Invalid precedence row in {filepath}: {lines[idx - 1]}")
-            k = parts[2]
-            successors = parts[3:3 + k] if k > 0 else []
-
-        seen_ids.add(i)
-        for j in successors:
-            precedence.append((i, j))
-            seen_ids.add(j)
-
-    if not seen_ids:
-        raise ValueError(f"No activities found in {filepath}")
-
-    n = max(max(seen_ids) + 1, expected_n)
-
-    durations = [0] * n
-    demands = [[0] * r for _ in range(n)]
-
-    for _ in range(expected_n):
-        parts = parse_ints(lines[idx])
-        idx += 1
-        if len(parts) < 2:
-            raise ValueError(f"Invalid duration row in {filepath}: {lines[idx - 1]}")
-
-        i = parts[0]
-        if len(parts) >= 2 + r and len(parts) == 2 + r:
-            duration = parts[1]
-            demand_values = parts[2:2 + r]
-        else:
-            if len(parts) < 3:
-                raise ValueError(f"Invalid duration row in {filepath}: {lines[idx - 1]}")
-            duration = parts[2]
-            demand_values = parts[3:3 + r]
-
-        if len(demand_values) < r:
-            demand_values += [0] * (r - len(demand_values))
-
-        durations[i] = duration
-        demands[i] = demand_values
-
-    capacities = parse_ints(lines[idx])
-    if len(capacities) < r:
-        raise ValueError(f"Invalid resource capacity row in {filepath}: {lines[idx]}")
-
-    inst.n = n
-    inst.num_resources = r
-    inst.precedence = precedence
-    inst.durations = durations
-    inst.demands = demands
-    inst.resources = capacities[:r]
-
-    return inst
-
-
-def build_graph(instance):
-    succ = [[] for _ in range(instance.n)]
-    pred = [[] for _ in range(instance.n)]
-
-    for i, j in instance.precedence:
-        if 0 <= i < instance.n and 0 <= j < instance.n:
-            succ[i].append(j)
-            pred[j].append(i)
-
-    return succ, pred
-
-
-def topological_order(instance):
-    succ, pred = build_graph(instance)
-    in_degree = [len(pred[i]) for i in range(instance.n)]
-    q = deque(i for i in range(instance.n) if in_degree[i] == 0)
-    order = []
-
-    while q:
-        u = q.popleft()
-        order.append(u)
-        for v in succ[u]:
-            in_degree[v] -= 1
-            if in_degree[v] == 0:
-                q.append(v)
-
-    if len(order) != instance.n:
-        raise ValueError("Precedence graph contains a cycle")
-
-    return order
-
-
-def compute_critical_path(instance):
-    succ, _ = build_graph(instance)
-    order = topological_order(instance)
-    cp = [0] * instance.n
-
-    for u in reversed(order):
-        if succ[u]:
-            cp[u] = instance.durations[u] + max(cp[v] for v in succ[u])
-        else:
-            cp[u] = instance.durations[u]
-
-    return cp
-
-
-def sgs(instance, priority_bias=None):
-    n = instance.n
-    durations = instance.durations
-    demands = instance.demands
-    capacities = instance.resources
-    num_resources = instance.num_resources
-
-    horizon = sum(durations)
-
-    if horizon <= 0:
-        return [0] * n, 0
-
-    if priority_bias is None:
-        priority_bias = [0.0] * n
-    elif len(priority_bias) != n:
-        raise ValueError("priority_bias length mismatch")
-
-    succ, pred = build_graph(instance)
-    cp = compute_critical_path(instance)
-
-    in_degree = [len(pred[i]) for i in range(n)]
-    start = [0] * n
-    usage = [[0] * num_resources for _ in range(horizon)]
-
-    active_resource_demands = [
-        [(r, demands[i][r]) for r in range(num_resources) if demands[i][r] > 0]
-        for i in range(n)
-    ]
-
-    ready = []
-    scheduled_count = 0
-
-    for i in range(n):
-        if in_degree[i] == 0:
-            heapq.heappush(ready, (-(cp[i] + priority_bias[i]), i))
-
-    while ready:
-        _, i = heapq.heappop(ready)
-
-        reqs = active_resource_demands[i]
-        for r, d in reqs:
-            if d > capacities[r]:
-                raise ValueError(
-                    f"Infeasible instance: activity {i} demand on resource {r} "
-                    f"({d}) exceeds capacity ({capacities[r]})"
-                )
-
-        duration_i = durations[i]
-        t = max((start[p] + durations[p] for p in pred[i]), default=0)
-        latest_start = horizon - duration_i
-
-        while t <= latest_start:
-            feasible = True
-
-            for dt in range(duration_i):
-                if t + dt >= horizon:
-                    feasible = False
-                    break
-
-                row = usage[t + dt]
-                for r, d in reqs:
-                    if row[r] + d > capacities[r]:
-                        feasible = False
-                        break
-                if not feasible:
-                    break
-
-            if feasible:
-                break
-
-            t += 1
-
-        if t > latest_start:
-            raise ValueError(
-                f"Infeasible instance: unable to schedule activity {i} within horizon {horizon}"
-            )
-
-        start[i] = t
-        scheduled_count += 1
-
-        for dt in range(duration_i):
-            row = usage[t + dt]
-            for r, d in reqs:
-                row[r] += d
-
-        for j in succ[i]:
-            in_degree[j] -= 1
-            if in_degree[j] == 0:
-                heapq.heappush(ready, (-(cp[j] + priority_bias[j]), j))
-
-    if scheduled_count != n:
-        raise ValueError("No feasible topological scheduling order (possible cycle)")
-
-    makespan = max(start[i] + durations[i] for i in range(n))
-    return start, makespan
+from utils.parser import parse_sch
+from utils.graph_utils import build_graph, topological_order, compute_critical_path
+from utils.sgs import sgs
 
 
 def resource_feasible(instance):
@@ -537,7 +295,7 @@ def classify_and_solve_best(instance, time_limit_s=28.0, seed=42, starts=120):
     rng = random.Random(seed)
     n = instance.n
     start_clock = time.perf_counter()
-    budget_s = max(0.2, float(time_limit_s))
+    budget_s = max(0.2, float(time_limit_s) * 0.8)
     deadline = start_clock + budget_s
 
     metrics = _compute_metrics(instance)
@@ -611,7 +369,13 @@ def classify_and_solve_best(instance, time_limit_s=28.0, seed=42, starts=120):
             sa_iters >= min_sa_iters_before_stall_exit
             and no_improve_iters >= stall_limit
         ):
-            break
+            # Restart from a random seed instead of quitting
+            no_improve_iters = 0
+            temp = max(1.0, 0.05 * best_makespan)
+            step = 0.35
+            base = rng.choice(seed_weights)
+            current_w = [base[i] + rng.uniform(-0.8, 0.8) for i in range(len(base))]
+            current_mk = best_makespan
 
         sa_iters += 1
 
@@ -650,7 +414,7 @@ def classify_and_solve_best(instance, time_limit_s=28.0, seed=42, starts=120):
 
     elapsed = time.perf_counter() - start_clock
     return "feasible", best_schedule, best_makespan, (
-        f"solver_3 starts={starts}, improvements={improvements}, elapsed={elapsed:.3f}s"
+        f"solver_3 starts={starts}, improvements={improvements}, elapsed={elapsed:.3f}s (budget={budget_s:.1f}s / {time_limit_s:.1f}s)"
     )
 
 
