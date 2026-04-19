@@ -2,7 +2,6 @@ import argparse
 import csv
 import multiprocessing as mp
 import os
-import statistics
 import sys
 import time
 from pathlib import Path
@@ -74,26 +73,7 @@ def main():
     workers = args.workers or os.cpu_count() or 1
     time_limit = max(0.2, args.time_limit)
 
-    print("=" * 96)
-    print(
-        f"benchmark_solver_optimal | dataset={args.dataset} | instances={len(files)} | "
-        f"workers={workers} | time_limit={time_limit:.2f}s"
-    )
-    print("=" * 96)
-    print(f"{'Instance':<16} {'Status':<22} {'Makespan':>10} {'Time(ms)':>12}")
-    print("-" * 96)
-
     tasks = [(str(f), time_limit, args.dataset) for f in files]
-
-    counts = {
-        "feasible_optimal": 0,
-        "feasible_not_proven": 0,
-        "true_infeasible": 0,
-        "heuristic_failed": 0,
-    }
-    output_format_ok_count = 0
-    times = []
-    wall_start = time.perf_counter()
 
     results_dir = root / "results"
     results_dir.mkdir(parents=True, exist_ok=True)
@@ -110,16 +90,9 @@ def main():
             "time_limit_s", "workers", "seed", "starts", "output_format_ok", "output_line",
         ])
 
-    print(f"CSV file:             {csv_path}")
-
     try:
         with mp.Pool(processes=workers) as pool:
             for name, status, makespan, elapsed_ms, dataset, format_ok, output_line in pool.imap_unordered(_solve_one, tasks):
-                times.append(elapsed_ms)
-                if status in counts:
-                    counts[status] += 1
-                if format_ok:
-                    output_format_ok_count += 1
                 csv_writer.writerow([
                     dataset,
                     name,
@@ -135,29 +108,9 @@ def main():
                     output_line,
                 ])
                 csv_file.flush()
-
-                mk_disp = "-" if makespan is None else str(makespan)
-                print(f"{name:<16} {status.upper():<22} {mk_disp:>10} {elapsed_ms:>12.1f}")
+                print(output_line)
     finally:
         csv_file.close()
-
-    wall_elapsed = time.perf_counter() - wall_start
-
-    print()
-    print("Summary")
-    print("-" * 96)
-    print(f"Total instances:      {len(files)}")
-    print(f"Feasible optimal:     {counts['feasible_optimal']}")
-    print(f"Feasible not proven:  {counts['feasible_not_proven']}")
-    print(f"True infeasible:      {counts['true_infeasible']}")
-    print(f"Heuristic failed:     {counts['heuristic_failed']}")
-    print(f"Output-format valid:  {output_format_ok_count}/{len(files)}")
-    if times:
-        print(f"Avg solve time:       {sum(times)/len(times):.1f} ms")
-        print(f"Median solve time:    {statistics.median(times):.1f} ms")
-        print(f"Min/Max solve time:   {min(times):.1f} / {max(times):.1f} ms")
-    print(f"Wall-clock time:      {wall_elapsed:.2f} s")
-    print(f"Workers:              {workers}")
 
 
 if __name__ == "__main__":
