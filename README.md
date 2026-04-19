@@ -1,14 +1,22 @@
 # CS202-Project
 
-RCPSP solver project with multiple heuristic solvers and one exact optimal solver.
+## CS202 Report Team
+
+- Sim Kay Wee — kaywee.sim.2024@computing.smu.edu.sg
+- Noah Sau Cheng Kuan — noah.sau.2024@computing.smu.edu.sg
+- Seah Min-Yi — minyi.seah.2024@computing.smu.edu.sg
+- Srividya Ravi Sivashankar — srividya.rs.2024@computing.smu.edu.sg
+- Lim Junsheng — js.lim.2024@computing.smu.edu.sg
+
+RCPSP solver project with two heuristic solvers and one exact optimal solver.
 
 ## Project Summary
 
-This project solves Resource-Constrained Project Scheduling Problem (RCPSP) instances from two datasets (`sm_j10` and `sm_j20`) using multiple solver strategies, then compares performance through standardized benchmark scripts. The workflow is: parse instance -> run selected solver -> validate schedule -> record per-instance output to CSV for analysis.
+This project solves Resource-Constrained Project Scheduling Problem (RCPSP) instances from two datasets (`sm_j10` and `sm_j20`) using `solver_topological`, `solver_3`, and `solver_optimal`. The workflow is: parse instance -> run selected solver -> validate schedule -> record per-instance output to CSV for analysis.
 
 Core folders:
 
-- `all_solvers/`: solver implementations (`solver_topological` baseline, `solver_3` heuristic, plus `solver_optimal` exact branch-and-bound).
+- `all_solvers/`: solver implementations (`solver_topological` baseline, `solver_3` heuristic, `solver_optimal` exact branch-and-bound).
 - `all_solver_benchmarks/`: batch benchmark runners with multiprocessing workers and uniform CSV output.
 - `utils/`: shared parser and helper modules used by benchmarks and solver components.
 - `sm_j10/`, `sm_j20/`: benchmark instance datasets.
@@ -19,9 +27,9 @@ Core folders:
 Run any benchmark in parallel with workers:
 
 ```bash
-python3 all_solver_benchmarks/benchmark_solver_1.py --dataset sm_j10 --workers 4
 python3 all_solver_benchmarks/benchmark_solver_topological.py --dataset sm_j10 --workers 4
-python3 all_solver_benchmarks/benchmark_solver_optimal.py --dataset sm_j10 --time-limit 10 --workers 8
+python3 all_solver_benchmarks/benchmark_solver_3.py --dataset sm_j20 --time-limit 30 --workers 8
+python3 all_solver_benchmarks/benchmark_solver_optimal.py --dataset sm_j10 --time-limit 30 --workers 8
 ```
 
 ## Run Benchmarks with Workers
@@ -31,12 +39,9 @@ All benchmark scripts support parallel execution with `--workers` (or `-w`).
 Examples:
 
 ```bash
-python3 all_solver_benchmarks/benchmark_solver_1.py --dataset sm_j10 --workers 4
 python3 all_solver_benchmarks/benchmark_solver_topological.py --dataset sm_j10 --workers 4
-python3 all_solver_benchmarks/benchmark_solver_2.py --dataset sm_j20 --time-limit 2 --workers 4
-python3 all_solver_benchmarks/benchmark_solver_3.py --dataset sm_j20 --time-limit 2 --workers 8
-python3 all_solver_benchmarks/benchmark_solver_4.py --dataset sm_j20 --time-limit 2 --workers 8
-python3 all_solver_benchmarks/benchmark_solver_optimal.py --dataset sm_j10 --time-limit 10 --workers 8
+python3 all_solver_benchmarks/benchmark_solver_3.py --dataset sm_j20 --time-limit 30 --workers 8
+python3 all_solver_benchmarks/benchmark_solver_optimal.py --dataset sm_j10 --time-limit 30 --workers 8
 ```
 
 Useful optional flags:
@@ -52,10 +57,7 @@ All benchmark scripts now log every instance (not only feasible ones) into CSV f
 Default files:
 
 - `benchmark_solver_topological.py` -> `results/solver_topological_results.csv`
-- `benchmark_solver_1.py` -> `results/solver_1_results.csv`
-- `benchmark_solver_2.py` -> `results/solver_2_results.csv`
 - `benchmark_solver_3.py` -> `results/solver_3_results.csv`
-- `benchmark_solver_4.py` -> `results/solver_4_results.csv`
 - `benchmark_solver_optimal.py` -> `results/solver_optimal_sm_j10_results.csv` or `results/solver_optimal_sm_j20_results.csv`
 
 Each CSV row includes status values.
@@ -81,7 +83,7 @@ CSV columns:
 Optional override:
 
 ```bash
-python3 all_solver_benchmarks/benchmark_solver_1.py --dataset sm_j10 --workers 4 --csv-file results/custom.csv
+python3 all_solver_benchmarks/benchmark_solver_3.py --dataset sm_j10 --workers 4 --csv-file results/custom.csv
 python3 all_solver_benchmarks/benchmark_solver_optimal.py --dataset sm_j20 --workers 8 --csv-file results/optimal_custom.csv
 ```
 
