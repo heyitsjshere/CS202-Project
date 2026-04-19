@@ -88,10 +88,6 @@ python3 all_solver_benchmarks/benchmark_solver_3.py --dataset sm_j10 --workers 4
 python3 all_solver_benchmarks/benchmark_solver_optimal.py --dataset sm_j20 --workers 8 --csv-file results/optimal_custom.csv
 ```
 
-Backward compatibility:
-
-- `--log-file` is still accepted as a legacy alias.
-
 ## More Details
 
 For detailed solver and benchmark usage, see `all_solvers/README.txt`.
