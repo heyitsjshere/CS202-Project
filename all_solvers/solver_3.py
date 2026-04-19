@@ -295,7 +295,7 @@ def classify_and_solve_best(instance, time_limit_s=28.0, seed=42, starts=120):
     rng = random.Random(seed)
     n = instance.n
     start_clock = time.perf_counter()
-    budget_s = max(0.2, float(time_limit_s) * 0.8)
+    budget_s = max(0.2, float(time_limit_s) - 1.0)
     deadline = start_clock + budget_s
 
     metrics = _compute_metrics(instance)

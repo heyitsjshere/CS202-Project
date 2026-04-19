@@ -210,7 +210,8 @@ def classify_and_solve_optimal(instance, time_limit_s=10.0):
     start = [-1] * n
     scheduled = [False] * n
     timed_out = [False]
-    deadline = (time.perf_counter() + float(time_limit_s)) if time_limit_s and time_limit_s > 0 else None
+    budget_s = max(0.2, float(time_limit_s) - 1.0)
+    deadline = (time.perf_counter() + budget_s) if time_limit_s and time_limit_s > 0 else None
 
     def earliest_feasible_start(job, est, latest_start):
         d = durations[job]

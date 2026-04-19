@@ -3,10 +3,12 @@ from pathlib import Path
 
 
 TOPO_CSV = Path("results/solver_topological_sm_j20_results.csv")
-SOLVER3_CSV = Path("results/solver_3_sm_j20_results.csv")
+OTHER_CSV = Path("results/solver_optimal_sm_j20_results.csv")
+OTHER_SOLVER = "solver_optimal"
+OTHER_LABEL = "Optimal"
 
 
-def read_latest_feasible_rows(path, solver_name):
+def read_latest_feasible_rows(path, solver_name, feasible_statuses):
     rows = {}
 
     with open(path, newline="", encoding="utf-8") as f:
@@ -20,7 +22,7 @@ def read_latest_feasible_rows(path, solver_name):
             makespan = row.get("makespan")
             time_ms = row.get("time_ms")
 
-            if status != "feasible" or makespan in ("", None) or time_ms in ("", None):
+            if status not in feasible_statuses or makespan in ("", None) or time_ms in ("", None):
                 continue
 
             key = (row["dataset"], row["instance"])
@@ -35,10 +37,14 @@ def read_latest_feasible_rows(path, solver_name):
 
 
 def main():
-    topo = read_latest_feasible_rows(TOPO_CSV, "solver_topological")
-    solver3 = read_latest_feasible_rows(SOLVER3_CSV, "solver_3")
+    topo = read_latest_feasible_rows(TOPO_CSV, "solver_topological", {"feasible"})
+    other = read_latest_feasible_rows(
+        OTHER_CSV,
+        OTHER_SOLVER,
+        {"feasible", "feasible_optimal", "feasible_not_proven"},
+    )
 
-    common = sorted(set(topo) & set(solver3))
+    common = sorted(set(topo) & set(other))
 
     if not common:
         print("No matching feasible instances found.")
@@ -47,50 +53,50 @@ def main():
     improvements = []
     absolute_improvements = []
     topo_makespans = []
-    solver3_makespans = []
-    solver3_better = 0
-    solver3_equal = 0
-    solver3_worse = 0
+    other_makespans = []
+    other_better = 0
+    other_equal = 0
+    other_worse = 0
 
-    print(f"{'Dataset':<8} {'Instance':<14} {'Topo':>8} {'Solver3':>8} {'Diff':>8} {'Improve %':>10}")
+    print(f"{'Dataset':<8} {'Instance':<14} {'Topo':>8} {OTHER_LABEL:>8} {'Diff':>8} {'Improve %':>10}")
     print("-" * 64)
 
     for key in common:
         topo_mk = topo[key]["makespan"]
-        solver3_mk = solver3[key]["makespan"]
+        other_mk = other[key]["makespan"]
 
-        diff = topo_mk - solver3_mk
+        diff = topo_mk - other_mk
         pct = (diff / topo_mk) * 100 if topo_mk > 0 else 0.0
 
         improvements.append(pct)
         absolute_improvements.append(diff)
         topo_makespans.append(topo_mk)
-        solver3_makespans.append(solver3_mk)
+        other_makespans.append(other_mk)
 
         if diff > 0:
-            solver3_better += 1
+            other_better += 1
         elif diff == 0:
-            solver3_equal += 1
+            other_equal += 1
         else:
-            solver3_worse += 1
+            other_worse += 1
 
         dataset, instance = key
-        print(f"{dataset:<8} {instance:<14} {topo_mk:>8} {solver3_mk:>8} {diff:>8} {pct:>9.2f}%")
+        print(f"{dataset:<8} {instance:<14} {topo_mk:>8} {other_mk:>8} {diff:>8} {pct:>9.2f}%")
 
     avg_pct = sum(improvements) / len(improvements)
     avg_abs = sum(absolute_improvements) / len(absolute_improvements)
     avg_topo_makespan = sum(topo_makespans) / len(topo_makespans)
-    avg_solver3_makespan = sum(solver3_makespans) / len(solver3_makespans)
+    avg_other_makespan = sum(other_makespans) / len(other_makespans)
 
     print()
     print("Summary")
     print("-" * 64)
     print(f"Compared instances:       {len(common)}")
-    print(f"Solver 3 better:          {solver3_better}")
-    print(f"Solver 3 equal:           {solver3_equal}")
-    print(f"Solver 3 worse:           {solver3_worse}")
+    print(f"{OTHER_LABEL} better:          {other_better}")
+    print(f"{OTHER_LABEL} equal:           {other_equal}")
+    print(f"{OTHER_LABEL} worse:           {other_worse}")
     print(f"Average topo makespan:    {avg_topo_makespan:.2f}")
-    print(f"Average solver 3 span:    {avg_solver3_makespan:.2f}")
+    print(f"Average {OTHER_LABEL} span:    {avg_other_makespan:.2f}")
     print(f"Average improvement:      {avg_pct:.2f}%")
     print(f"Average makespan saved:   {avg_abs:.2f}")
 
