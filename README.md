@@ -8,7 +8,7 @@ This project solves Resource-Constrained Project Scheduling Problem (RCPSP) inst
 
 Core folders:
 
-- `all_solvers/`: solver implementations (`solver_1` to `solver_4` heuristics, plus `solver_optimal` exact branch-and-bound).
+- `all_solvers/`: solver implementations (`solver_topological` baseline, `solver_3` heuristic, plus `solver_optimal` exact branch-and-bound).
 - `all_solver_benchmarks/`: batch benchmark runners with multiprocessing workers and uniform CSV output.
 - `utils/`: shared parser and helper modules used by benchmarks and solver components.
 - `sm_j10/`, `sm_j20/`: benchmark instance datasets.
@@ -20,6 +20,7 @@ Run any benchmark in parallel with workers:
 
 ```bash
 python3 all_solver_benchmarks/benchmark_solver_1.py --dataset sm_j10 --workers 4
+python3 all_solver_benchmarks/benchmark_solver_topological.py --dataset sm_j10 --workers 4
 python3 all_solver_benchmarks/benchmark_solver_optimal.py --dataset sm_j10 --time-limit 10 --workers 8
 ```
 
@@ -31,6 +32,7 @@ Examples:
 
 ```bash
 python3 all_solver_benchmarks/benchmark_solver_1.py --dataset sm_j10 --workers 4
+python3 all_solver_benchmarks/benchmark_solver_topological.py --dataset sm_j10 --workers 4
 python3 all_solver_benchmarks/benchmark_solver_2.py --dataset sm_j20 --time-limit 2 --workers 4
 python3 all_solver_benchmarks/benchmark_solver_3.py --dataset sm_j20 --time-limit 2 --workers 8
 python3 all_solver_benchmarks/benchmark_solver_4.py --dataset sm_j20 --time-limit 2 --workers 8
@@ -49,6 +51,7 @@ All benchmark scripts now log every instance (not only feasible ones) into CSV f
 
 Default files:
 
+- `benchmark_solver_topological.py` -> `results/solver_topological_results.csv`
 - `benchmark_solver_1.py` -> `results/solver_1_results.csv`
 - `benchmark_solver_2.py` -> `results/solver_2_results.csv`
 - `benchmark_solver_3.py` -> `results/solver_3_results.csv`
